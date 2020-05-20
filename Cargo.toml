@@ -1,0 +1,10 @@
+[package]
+name = "ppm_decode"
+version = "0.1.0"
+authors = ["Todd Stellanova <tstellanova@users.noreply.github.com>"]
+edition = "2018"
+description = "Parser for the Pulse Position Modulation (PPM) radio control (RC) protocol"
+
+
+[dependencies]
+arraydeque = { version = "~0.4", default-features = false }
