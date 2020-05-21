@@ -127,19 +127,19 @@ impl PpmParser {
             PpmPhase::PULSE_ACTIVE => {
                 // previous pulse has ended
                 if width >= MIN_SYNC_WIDTH {
+                    self.working_frame.chan_count += 1;
                     //received sync -- we should be finished with prior frame
                     //TODO verify we receive a consistent number of channels
                     if self.working_frame.chan_count >= self.min_channels {
                         self.parsed_frame.replace(self.working_frame);
                     }
                     else {
-                        //we didn't get expected number of channels
+                        //we didn't get expected minimum number of channels
                         self.parsed_frame = None;
                     }
                     self.reset_channel_counter();
                 }
                 else {
-                    //TODO this conversion is bogus
                     self.working_frame.chan_values[self.working_frame.chan_count as usize] = width;
                     self.working_frame.chan_count += 1;
                 }
@@ -167,22 +167,12 @@ impl PpmParser {
 mod tests {
     use crate::*;
 
-    fn send_resync(parser: &mut PpmParser, start_time: PpmTime, sync_time: PpmTime, chan_count: u8) -> PpmTime {
-        parser.handle_pulse_start(start_time);
-        let mut edge_time: PpmTime = start_time;
-        for i in 0..chan_count {
-            parser.handle_pulse_start(edge_time);
-            edge_time += MID_CHAN_VAL;
-        }
-        (edge_time + sync_time)
-    }
-
     #[test]
     fn process_pulses() {
         const TEST_CHAN_COUNT: u8 = 16;
         const TEST_RESYNC_WIDTH: PpmTime = 2500;
-        let mut parser = PpmParser::new()
-            .set_channel_limits(800, 2200)
+        let mut parser = PpmParser::new();
+        parser.set_channel_limits(800, 2200)
             .set_sync_width(TEST_RESYNC_WIDTH);
 
         let mut cur_time: PpmTime = 100;
@@ -194,18 +184,27 @@ mod tests {
         assert!(frame.is_none(), "there should be no frame yet");
 
         //send a full frame
-        for i in 0..TEST_CHAN_COUNT {
+        for _ in 0..TEST_CHAN_COUNT {
             parser.handle_pulse_start(cur_time);
             let frame = parser.next_frame();
             assert!(frame.is_none(), "frame should be incomplete");
+            cur_time += MID_CHAN_VAL;
         }
 
         //send the next sync
         cur_time += TEST_RESYNC_WIDTH;
         parser.handle_pulse_start(cur_time);
         //should now have a complete frame available
-        let frame = parser.next_frame();
-        assert!(frame.is_some(), "frame should be complete");
+        let frame_opt = parser.next_frame();
+        assert!(frame_opt.is_some(), "frame should be complete");
 
+        if let Some(frame) = frame_opt {
+            let valid_chans = frame.chan_count as usize;
+            assert_eq!(valid_chans, TEST_CHAN_COUNT as usize, "wrong number of channels");
+            for i in 0..valid_chans {
+                let val = frame.chan_values[i];
+                assert_eq!(val, MID_CHAN_VAL)
+            }
+        }
     }
 }
