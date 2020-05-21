@@ -7,4 +7,4 @@ description = "Parser for the Pulse Position Modulation (PPM) radio control (RC)
 
 
 [dependencies]
-arraydeque = { version = "~0.4", default-features = false }
+embedded-hal = { version = "0.2.3", features = ["unproven"] }
