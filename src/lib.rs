@@ -69,9 +69,9 @@ pub const MAX_PPM_CHANNELS: usize = 20;
 #[derive(Copy, Clone, Debug)]
 pub struct PpmFrame {
     /// Decoded PPM channel values
-    chan_values: [PpmTime; MAX_PPM_CHANNELS],
+    pub chan_values: [PpmTime; MAX_PPM_CHANNELS],
     /// Number of channels decoded (≤ MAX_PPM_CHANNELS)
-    chan_count: u8,
+    pub chan_count: u8,
 }
 
 /// Configuration values for PpmParser
@@ -108,6 +108,46 @@ impl Default for ParserConfig {
 
 /// The main PPM decoder.
 ///
+/// # Example:
+/// ```
+///     use ppm_decode::*;
+///         let mut parser = PpmParser::new();
+///         //arbitrary start time
+///         let mut cur_time: PpmTime = 100;
+///
+///         //start with a trailing pulse from prior frame, to force resync
+///         parser.handle_pulse_start(cur_time);
+///         let frame = parser.next_frame();
+///         assert!(frame.is_none(), "there should be no complete frame yet");
+///
+///         //this effectively starts a new frame:
+///         cur_time += MIN_SYNC_WIDTH;
+///         // send n+1 pulses where n is the channel counts
+///         for _ in 0..MIN_PPM_CHANNELS + 1 {
+///             parser.handle_pulse_start(cur_time);
+///             let frame = parser.next_frame();
+///             assert!(frame.is_none(), "frame should be incomplete");
+///             // each pulse is separated by the same gap in this test,
+///             // which means all channels have the same value in this frame
+///             cur_time += MID_CHAN_VAL;
+///         }
+///
+///         //send the next sync
+///         cur_time += MIN_SYNC_WIDTH;
+///         parser.handle_pulse_start(cur_time);
+///         //should now have a complete frame available
+///         let frame_opt = parser.next_frame();
+///         assert!(frame_opt.is_some(), "frame should be complete");
+///
+///         if let Some(frame) = frame_opt {
+///             let valid_chans = frame.chan_count;
+///             assert_eq!( valid_chans, MIN_PPM_CHANNELS, "wrong number of channels");
+///             for i in 0..valid_chans as usize {
+///                 let val = frame.chan_values[i];
+///                 assert_eq!(val, MID_CHAN_VAL)
+///             }
+///         }
+/// ```
 impl PpmParser {
     pub fn new() -> Self {
         Self {
@@ -253,14 +293,14 @@ mod tests {
             .set_sync_width(TEST_RESYNC_WIDTH - 10);
 
         let mut cur_time: PpmTime = 100;
-        //start with a garbage pulse from prior packet
+        //start with a garbage pulse from prior frame
         parser.handle_pulse_start(cur_time);
-        //this effectively starts a new packet
-        cur_time += TEST_RESYNC_WIDTH;
         let frame = parser.next_frame();
         assert!(frame.is_none(), "there should be no frame yet");
 
         //send a full frame
+        //this effectively starts a new frame:
+        cur_time += TEST_RESYNC_WIDTH;
         for _ in 0..TEST_CHAN_COUNT + 1 {
             parser.handle_pulse_start(cur_time);
             let frame = parser.next_frame();
@@ -276,15 +316,61 @@ mod tests {
         assert!(frame_opt.is_some(), "frame should be complete");
 
         if let Some(frame) = frame_opt {
-            let valid_chans = frame.chan_count as usize;
-            assert_eq!(
-                valid_chans, TEST_CHAN_COUNT as usize,
-                "wrong number of channels"
-            );
-            for i in 0..valid_chans {
+            let valid_chans = frame.chan_count;
+            assert_eq!(valid_chans, TEST_CHAN_COUNT,"wrong number of channels");
+            for i in 0..valid_chans as usize {
                 let val = frame.chan_values[i];
                 assert_eq!(val, MID_CHAN_VAL)
             }
         }
     }
+
+    #[test]
+    fn overflow_timer() {
+        const TEST_CHAN_COUNT: u8 = 3;
+        let mut parser = PpmParser::new();
+        parser.set_minimum_channels(TEST_CHAN_COUNT);
+
+        // for this test all the channel pulses are separated by the same gap (same channel value)
+        const PULSE_GAP_TIME: PpmTime = MID_CHAN_VAL;
+
+        // Send a pulse train that looks like this:
+        // |______|___|___|___|______
+        // where the third pulse arrives after PpmTime overflow
+        // This calculated start time is for the first pulse:
+        let mut cur_time: PpmTime =
+            PpmTime::max_value() - PULSE_GAP_TIME - MIN_SYNC_WIDTH + 10;
+        //start with a garbage pulse from prior frame
+        parser.handle_pulse_start(cur_time);
+        let frame = parser.next_frame();
+        assert!(frame.is_none(), "there should be no complete frame yet");
+
+        //this effectively starts a new frame:
+        cur_time += MIN_SYNC_WIDTH;
+        for _ in 0..TEST_CHAN_COUNT + 1 {
+            parser.handle_pulse_start(cur_time);
+            let frame = parser.next_frame();
+            assert!(frame.is_none(), "frame should be incomplete");
+            // this should overflow at the third pulse:
+            cur_time = cur_time.wrapping_add(MID_CHAN_VAL);
+        }
+
+        //send the next sync
+        cur_time += MIN_SYNC_WIDTH;
+        parser.handle_pulse_start(cur_time);
+        //should now have a complete frame available
+        let frame_opt = parser.next_frame();
+        assert!(frame_opt.is_some(), "frame should be complete");
+
+        if let Some(frame) = frame_opt {
+            let valid_chans = frame.chan_count ;
+            assert_eq!( valid_chans, TEST_CHAN_COUNT, "wrong number of channels");
+            for i in 0..valid_chans as usize {
+                let val = frame.chan_values[i];
+                assert_eq!(val, MID_CHAN_VAL)
+            }
+        }
+    }
+
+
 }
