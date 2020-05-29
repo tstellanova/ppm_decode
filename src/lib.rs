@@ -5,7 +5,6 @@ LICENSE: BSD3 (see LICENSE file)
 
 #![no_std]
 
-
 //!
 //! This library provides decoding of PPM pulse edges into PPM frames.
 //! It does not require a particular interrupt handling or input pin
@@ -38,7 +37,6 @@ LICENSE: BSD3 (see LICENSE file)
 //!
 //!
 
-
 /// Base type for PPM timing
 /// Your clock for measuring pulse edges will need at least microsecond resolution.
 pub type Microseconds = u32;
@@ -46,24 +44,21 @@ pub type Microseconds = u32;
 /// PPM timing values
 pub type PpmTime = Microseconds;
 
-/// Default minimum channel value:
-/// in practice as low as 800 microseconds
-pub const MIN_CHAN_VAL: PpmTime = 1000;
-/// Default maximum channel value:
-/// in practice as much as 2200 microseconds
-pub const MAX_CHAN_VAL: PpmTime = 2000;
+/// Default minimum channel value
+pub const MIN_CHAN_VAL: PpmTime = 800;
+/// Default maximum channel value
+pub const MAX_CHAN_VAL: PpmTime = 2200;
 /// Default midpoint channel value
 pub const MID_CHAN_VAL: PpmTime = (MAX_CHAN_VAL + MIN_CHAN_VAL) / 2;
 
-/// Default minimum gap between frames (no pulses / inactive)
-pub const MIN_SYNC_WIDTH: PpmTime = 2300;
+/// Default minimum gap between frames (no pulses / inactive/ sync)
+pub const MIN_SYNC_WIDTH: PpmTime = 4000;
 
 /// Default minimum number of channels per frame
 pub const MIN_PPM_CHANNELS: u8 = 5;
 
 /// Maximum PPM channels this library supports
 pub const MAX_PPM_CHANNELS: usize = 20;
-
 
 /// A single group of PPM channel values
 #[derive(Copy, Clone, Debug)]
@@ -91,6 +86,10 @@ pub struct ParserConfig {
 
     /// Configurable minimum number of channels per valid frame
     min_channels: u8,
+
+    /// The maximum timer value, after which the clock/timer wraps,
+    /// eg 0xFFFF for a 16-bit timer, 0xFFFF_FFFF for a 32-bit timer
+    max_ppm_time: u32,
 }
 
 impl Default for ParserConfig {
@@ -100,11 +99,11 @@ impl Default for ParserConfig {
             max_chan_value: MAX_CHAN_VAL,
             mid_chan_value: MID_CHAN_VAL,
             min_sync_width: MIN_SYNC_WIDTH,
-            min_channels: MIN_PPM_CHANNELS
+            min_channels: MIN_PPM_CHANNELS,
+            max_ppm_time: 0xFFFF_FFFF,
         }
     }
 }
-
 
 /// The main PPM decoder.
 ///
@@ -170,7 +169,7 @@ impl PpmParser {
     ) -> &mut Self {
         self.config.min_chan_value = min;
         self.config.max_chan_value = max;
-        self.config.mid_chan_value =  (max + min) / 2;
+        self.config.mid_chan_value = (max + min) / 2;
         self
     }
 
@@ -183,6 +182,13 @@ impl PpmParser {
     /// Set the minimum number of channels in a valid frame
     pub fn set_minimum_channels(&mut self, channels: u8) -> &mut Self {
         self.config.min_channels = channels;
+        self
+    }
+
+    /// Set the maximum timer value -- allows us to use timers with
+    /// different resolution than the default 32 bits
+    pub fn set_max_ppm_time(&mut self, value: PpmTime) -> &mut Self {
+        self.config.max_ppm_time = value;
         self
     }
 
@@ -201,7 +207,12 @@ impl PpmParser {
     /// the pulses consistently.
     ///
     pub fn handle_pulse_start(&mut self, count: PpmTime) {
-        let width = count.wrapping_sub(self.last_pulse_start);
+        //calculate pulse width using wrapping subtraction based on max_ppm_time
+        let width = if count > self.last_pulse_start {
+            count - self.last_pulse_start
+        } else {
+            (self.config.max_ppm_time - self.last_pulse_start) + count
+        };
         self.last_pulse_start = count;
 
         match self.state {
@@ -218,7 +229,8 @@ impl PpmParser {
                 if width >= MIN_SYNC_WIDTH {
                     // Received sync -- check whether finished decoding a whole frame
                     // TODO add a feature to only allow slow drift of the channel count
-                    if self.working_frame.chan_count >= self.config.min_channels {
+                    if self.working_frame.chan_count >= self.config.min_channels
+                    {
                         // We've received the configured minimum number of channels:
                         // frame is complete.
                         self.parsed_frame.replace(self.working_frame);
@@ -227,15 +239,15 @@ impl PpmParser {
                         self.parsed_frame = None;
                     }
                     self.reset_channel_counter();
-                }
-                else {
+                } else {
                     // Verify the pulse received is within limits, otherwise resync.
-                    if width >= self.config.min_chan_value  &&
-                        width <= self.config.max_chan_value {
+                    if width >= self.config.min_chan_value
+                        && width <= self.config.max_chan_value
+                    {
                         self.working_frame.chan_values
                             [self.working_frame.chan_count as usize] = width;
                         self.working_frame.chan_count += 1;
-                        //TODO verify we haven't received TOO MANY channels (<MAX_PPM_CHANNELS)
+                    //TODO verify we haven't received TOO MANY channels (<MAX_PPM_CHANNELS)
                     } else {
                         // bogus pulse -- resynchronize
                         self.reset_channel_counter();
@@ -245,7 +257,6 @@ impl PpmParser {
             }
         }
     }
-
 
     /// We've either finished receiving all channels
     /// (and have received a sync/reset)
@@ -317,7 +328,10 @@ mod tests {
 
         if let Some(frame) = frame_opt {
             let valid_chans = frame.chan_count;
-            assert_eq!(valid_chans, TEST_CHAN_COUNT,"wrong number of channels");
+            assert_eq!(
+                valid_chans, TEST_CHAN_COUNT,
+                "wrong number of channels"
+            );
             for i in 0..valid_chans as usize {
                 let val = frame.chan_values[i];
                 assert_eq!(val, MID_CHAN_VAL)
@@ -363,14 +377,15 @@ mod tests {
         assert!(frame_opt.is_some(), "frame should be complete");
 
         if let Some(frame) = frame_opt {
-            let valid_chans = frame.chan_count ;
-            assert_eq!( valid_chans, TEST_CHAN_COUNT, "wrong number of channels");
+            let valid_chans = frame.chan_count;
+            assert_eq!(
+                valid_chans, TEST_CHAN_COUNT,
+                "wrong number of channels"
+            );
             for i in 0..valid_chans as usize {
                 let val = frame.chan_values[i];
                 assert_eq!(val, MID_CHAN_VAL)
             }
         }
     }
-
-
 }
